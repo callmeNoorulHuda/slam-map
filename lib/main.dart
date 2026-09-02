@@ -36,7 +36,11 @@ class _SlamHomePageState extends State<SlamHomePage> {
   StreamSubscription? _sub;
   bool _running = false;
   bool _showMap = false; // toggled after a scan, to view the built map
+  bool _highDetail = true;
   int _pointCount = 0;
+  int _lastPointCount = 0;
+  DateTime _lastCountUpdate = DateTime.now();
+  bool _showGapWarning = false;
   double _x = 0, _y = 0, _z = 0;
   String _trackingState = 'notAvailable';
   String? _lastExportPath;
@@ -62,8 +66,22 @@ class _SlamHomePageState extends State<SlamHomePage> {
   void _startListening() {
     _sub = _frames.receiveBroadcastStream().listen((event) {
       final map = Map<String, dynamic>.from(event as Map);
+      final newCount = map['pointCount'] as int;
+
       setState(() {
-        _pointCount = map['pointCount'] as int;
+        // Gap warning logic: if we are moving but not finding new points
+        if (_running && newCount > 0) {
+          final now = DateTime.now();
+          if (newCount > _lastPointCount) {
+            _lastCountUpdate = now;
+            _showGapWarning = false;
+          } else if (now.difference(_lastCountUpdate).inSeconds > 3) {
+            _showGapWarning = true;
+          }
+        }
+
+        _lastPointCount = _pointCount;
+        _pointCount = newCount;
         _x = (map['x'] as num).toDouble();
         _y = (map['y'] as num).toDouble();
         _z = (map['z'] as num).toDouble();
@@ -122,6 +140,11 @@ class _SlamHomePageState extends State<SlamHomePage> {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('Export failed: ${e.message}')));
     }
+  }
+
+  Future<void> _toggleHighDetail(bool value) async {
+    await _control.invokeMethod('setHighDetail', value);
+    setState(() => _highDetail = value);
   }
 
   @override
@@ -206,7 +229,7 @@ class _SlamHomePageState extends State<SlamHomePage> {
                       ),
                     ),
                   ),
-                  if (_running)
+                  if (_running) ...[
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 8.0),
                       child: Container(
@@ -223,6 +246,26 @@ class _SlamHomePageState extends State<SlamHomePage> {
                         ),
                       ),
                     ),
+                    if (_showGapWarning)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8.0),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.redAccent.withOpacity(0.9),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: const Text(
+                            '⚠️ Gaps detected! Scan this area more thoroughly',
+                            style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12),
+                          ),
+                        ),
+                      ),
+                  ],
                 ],
               ),
             ),
@@ -258,6 +301,22 @@ class _SlamHomePageState extends State<SlamHomePage> {
             child: Column(
               children: [
                 if (!_showMap) ...[
+                  if (!_running)
+                    Card(
+                      color: Colors.black.withOpacity(0.6),
+                      child: SwitchListTile(
+                        title: const Text('High Detail Mode',
+                            style:
+                                TextStyle(color: Colors.white, fontSize: 14)),
+                        subtitle: const Text('Uses raw LiDAR depth maps',
+                            style:
+                                TextStyle(color: Colors.white70, fontSize: 11)),
+                        value: _highDetail,
+                        onChanged: _toggleHighDetail,
+                        activeThumbColor: Colors.tealAccent,
+                      ),
+                    ),
+                  const SizedBox(height: 8),
                   ElevatedButton.icon(
                     icon: Icon(_running ? Icons.stop : Icons.play_arrow),
                     label: Text(_running ? 'Stop Scan' : 'Start Scan'),

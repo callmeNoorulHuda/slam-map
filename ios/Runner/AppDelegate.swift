@@ -22,6 +22,13 @@ import ARKit
       case "stop":
         ARSlamManager.shared.stop()
         result(nil)
+      case "setHighDetail":
+        if let enabled = call.arguments as? Bool {
+            ARSlamManager.shared.isHighDetailEnabled = enabled
+            result(nil)
+        } else {
+            result(FlutterError(code: "INVALID_ARGS", message: "Expected bool", details: nil))
+        }
       case "export":
         if let path = ARSlamManager.shared.exportPLY() {
           result(path)
@@ -64,6 +71,7 @@ class ARSlamManager: NSObject, ARSessionDelegate, FlutterStreamHandler {
     let session = ARSession()
     var eventSink: FlutterEventSink?
     var isRunning = false
+    var isHighDetailEnabled = true
 
     // Keyed by ARKit's per-point identifier so repeated observations of the
     // same physical feature overwrite rather than duplicate.
@@ -85,10 +93,16 @@ class ARSlamManager: NSObject, ARSessionDelegate, FlutterStreamHandler {
         }
         let config = ARWorldTrackingConfiguration()
         config.worldAlignment = .gravity
+        config.planeDetection = [.horizontal, .vertical]
 
         // Enable LiDAR mesh reconstruction if available
         if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
             config.sceneReconstruction = .mesh
+        }
+
+        // Enable raw scene depth if available
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
+            config.frameSemantics.insert(.sceneDepth)
         }
 
         mapPoints.removeAll()
@@ -117,6 +131,13 @@ class ARSlamManager: NSObject, ARSessionDelegate, FlutterStreamHandler {
             }
         }
 
+        // Process raw depth data for extra detail
+        if isHighDetailEnabled,
+           let depthMap = frame.sceneDepth?.depthMap,
+           let confidenceMap = frame.sceneDepth?.confidenceMap {
+            processDepth(depthMap: depthMap, confidenceMap: confidenceMap, frame: frame)
+        }
+
         let t = frame.camera.transform.columns.3
 
         // Count total points (sparse + dense mesh vertices if available)
@@ -130,6 +151,59 @@ class ARSlamManager: NSObject, ARSessionDelegate, FlutterStreamHandler {
             "trackingState": trackingStateString(frame.camera.trackingState)
         ]
         eventSink?(payload)
+    }
+
+    private func processDepth(depthMap: CVPixelBuffer, confidenceMap: CVPixelBuffer, frame: ARFrame) {
+        CVPixelBufferLockBaseAddress(depthMap, .readOnly)
+        CVPixelBufferLockBaseAddress(confidenceMap, .readOnly)
+        defer {
+            CVPixelBufferUnlockBaseAddress(depthMap, .readOnly)
+            CVPixelBufferUnlockBaseAddress(confidenceMap, .readOnly)
+        }
+
+        let width = CVPixelBufferGetWidth(depthMap)
+        let height = CVPixelBufferGetHeight(depthMap)
+        let depthData = CVPixelBufferGetBaseAddress(depthMap)!.assumingMemoryBound(to: Float32.self)
+        let confidenceData = CVPixelBufferGetBaseAddress(confidenceMap)!.assumingMemoryBound(to: UInt8.self)
+
+        let camera = frame.camera
+        let intrinsics = camera.intrinsics
+        let cameraTransform = camera.transform
+
+        // Downsample for performance (e.g., every 8th pixel)
+        let step = 8
+        for y in stride(from: 0, to: height, by: step) {
+            for x in stride(from: 0, to: width, by: step) {
+                let idx = y * width + x
+                let confidence = confidenceData[idx]
+
+                // Only use high-confidence points (2 is high, 1 is medium)
+                if confidence < 2 { continue }
+
+                let depth = depthData[idx]
+                if depth < 0.1 || depth > 5.0 { continue } // Filter range
+
+                // Back-project pixel to 3D space
+                let xNorm = (Float(x) - intrinsics[2][0]) / intrinsics[0][0]
+                let yNorm = (Float(y) - intrinsics[2][1]) / intrinsics[1][1]
+                let pointInCamera = SIMD4<Float>(xNorm * depth, yNorm * depth, depth, 1)
+
+                // Transform to world space
+                let worldPoint = cameraTransform * pointInCamera
+
+                // Use a simple spatial hash to avoid duplicates
+                // Using a slightly larger grid (5cm) for raw depth to keep point count manageable
+                let gridScale: Float = 20.0
+                let gx = Int(worldPoint.x * gridScale)
+                let gy = Int(worldPoint.y * gridScale)
+                let gz = Int(worldPoint.z * gridScale)
+                let id = UInt64(bitPattern: Int64(gx ^ (gy << 20) ^ (gz << 40)))
+
+                if mapPoints[id] == nil {
+                    mapPoints[id] = SIMD3<Float>(worldPoint.x, worldPoint.y, worldPoint.z)
+                }
+            }
+        }
     }
 
     func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
