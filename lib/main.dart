@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
@@ -26,9 +27,10 @@ class SlamHomePage extends StatefulWidget {
 }
 
 class _SlamHomePageState extends State<SlamHomePage> {
-  // These channel names must match ios/Runner/AppDelegate.swift exactly.
+  // These channel/view-type names must match ios/Runner/AppDelegate.swift exactly.
   static const _control = MethodChannel('com.noor.slam/control');
   static const _frames = EventChannel('com.noor.slam/frames');
+  static const _arViewType = 'ar-preview-view';
 
   StreamSubscription? _sub;
   bool _running = false;
@@ -88,57 +90,82 @@ class _SlamHomePageState extends State<SlamHomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('iPhone SLAM Mapper')),
-      body: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Card(
+      body: Stack(
+        children: [
+          // Live camera feed + ARKit's yellow feature-point overlay,
+          // filling the whole screen behind the UI.
+          Positioned.fill(
+            child: Platform.isIOS
+                ? const UiKitView(
+                    viewType: _arViewType,
+                    creationParamsCodec: StandardMessageCodec(),
+                  )
+                : const ColoredBox(
+                    color: Colors.black,
+                    child: Center(
+                      child: Text(
+                        'AR preview only available on iOS',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                    ),
+                  ),
+          ),
+
+          // Top overlay: live stats.
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 12,
+            left: 16,
+            right: 16,
+            child: Card(
+              color: Colors.black.withOpacity(0.6),
               child: Padding(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text('Tracking: $_trackingState',
-                        style: Theme.of(context).textTheme.titleMedium),
-                    const SizedBox(height: 8),
-                    Text('Map points: $_pointCount'),
+                        style: const TextStyle(color: Colors.white)),
+                    Text('Map points: $_pointCount',
+                        style: const TextStyle(color: Colors.white)),
                     Text(
-                      'Pose (x, y, z): '
-                      '${_x.toStringAsFixed(2)}, '
-                      '${_y.toStringAsFixed(2)}, '
-                      '${_z.toStringAsFixed(2)}',
+                      'Pose (x, y, z): ${_x.toStringAsFixed(2)}, '
+                      '${_y.toStringAsFixed(2)}, ${_z.toStringAsFixed(2)}',
+                      style: const TextStyle(color: Colors.white),
                     ),
                   ],
                 ),
               ),
             ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              icon: Icon(_running ? Icons.stop : Icons.play_arrow),
-              label: Text(_running ? 'Stop Scan' : 'Start Scan'),
-              onPressed: _toggleScan,
+          ),
+
+          // Bottom overlay: controls.
+          Positioned(
+            bottom: MediaQuery.of(context).padding.bottom + 16,
+            left: 16,
+            right: 16,
+            child: Column(
+              children: [
+                ElevatedButton.icon(
+                  icon: Icon(_running ? Icons.stop : Icons.play_arrow),
+                  label: Text(_running ? 'Stop Scan' : 'Start Scan'),
+                  onPressed: _toggleScan,
+                ),
+                const SizedBox(height: 8),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.upload_file),
+                  label: const Text('Export & Share Map (.ply)'),
+                  onPressed: _pointCount > 0 ? _export : null,
+                ),
+                if (_lastExportPath != null) ...[
+                  const SizedBox(height: 6),
+                  Text('Saved to: $_lastExportPath',
+                      style:
+                          const TextStyle(color: Colors.white, fontSize: 11)),
+                ],
+              ],
             ),
-            const SizedBox(height: 12),
-            ElevatedButton.icon(
-              icon: const Icon(Icons.upload_file),
-              label: const Text('Export & Share Map (.ply)'),
-              onPressed: _pointCount > 0 ? _export : null,
-            ),
-            if (_lastExportPath != null) ...[
-              const SizedBox(height: 12),
-              Text('Saved to: $_lastExportPath',
-                  style: Theme.of(context).textTheme.bodySmall),
-            ],
-            const Spacer(),
-            const Text(
-              'Move the phone slowly around the room to build up the map. '
-              'Good lighting and textured surfaces improve tracking quality.',
-              style: TextStyle(color: Colors.grey),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

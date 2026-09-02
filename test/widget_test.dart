@@ -1,8 +1,7 @@
 // Basic smoke test for the SLAM app's home screen.
 //
-// Verifies the app builds, shows its title, and starts in the
-// "not scanning" state (Start Scan visible, Export disabled since
-// there's no data yet).
+// Verifies the app builds and starts in the "not scanning" state
+// (Start Scan visible, Export disabled since there's no data yet).
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -13,9 +12,6 @@ void main() {
   testWidgets('SLAM home screen shows initial state',
       (WidgetTester tester) async {
     await tester.pumpWidget(const SlamApp());
-
-    // App bar title is visible.
-    expect(find.text('iPhone SLAM Mapper'), findsOneWidget);
 
     // Starts idle: "Start Scan" is shown, not "Stop Scan".
     expect(find.text('Start Scan'), findsOneWidget);

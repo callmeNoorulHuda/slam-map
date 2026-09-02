@@ -39,6 +39,10 @@ import ARKit
     )
     eventChannel.setStreamHandler(ARSlamManager.shared)
 
+    // Live camera + feature-point overlay, shown as a native view inside Flutter.
+    let arViewRegistrar = self.registrar(forPlugin: "ARPreviewViewPlugin")!
+    arViewRegistrar.register(ARPreviewFactory(), withId: "ar-preview-view")
+
     GeneratedPluginRegistrant.register(with: self)
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
@@ -171,5 +175,34 @@ class ARSlamManager: NSObject, ARSessionDelegate, FlutterStreamHandler {
     func onCancel(withArguments arguments: Any?) -> FlutterError? {
         self.eventSink = nil
         return nil
+    }
+}
+
+// MARK: - Live AR camera preview (Platform View)
+
+/// Creates the native AR preview view requested from Flutter's UiKitView.
+class ARPreviewFactory: NSObject, FlutterPlatformViewFactory {
+    func create(withFrame frame: CGRect, viewIdentifier viewId: Int64, arguments args: Any?) -> FlutterPlatformView {
+        return ARPreviewView(frame: frame)
+    }
+}
+
+/// Wraps an ARSCNView attached to ARSlamManager's already-running session, so
+/// it shows the live camera feed plus ARKit's built-in yellow feature-point
+/// overlay — purely a visualization layer, it doesn't affect tracking.
+class ARPreviewView: NSObject, FlutterPlatformView {
+    private let sceneView: ARSCNView
+
+    init(frame: CGRect) {
+        sceneView = ARSCNView(frame: frame)
+        sceneView.session = ARSlamManager.shared.session
+        sceneView.automaticallyUpdatesLighting = true
+        sceneView.showsStatistics = false
+        sceneView.debugOptions = [.showFeaturePoints]
+        super.init()
+    }
+
+    func view() -> UIView {
+        return sceneView
     }
 }
