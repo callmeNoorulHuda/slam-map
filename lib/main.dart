@@ -31,13 +31,33 @@ class _SlamHomePageState extends State<SlamHomePage> {
   static const _control = MethodChannel('com.noor.slam/control');
   static const _frames = EventChannel('com.noor.slam/frames');
   static const _arViewType = 'ar-preview-view';
+  static const _mapViewType = 'point-cloud-view';
 
   StreamSubscription? _sub;
   bool _running = false;
+  bool _showMap = false; // toggled after a scan, to view the built map
   int _pointCount = 0;
   double _x = 0, _y = 0, _z = 0;
   String _trackingState = 'notAvailable';
   String? _lastExportPath;
+
+  String get _guidanceMessage {
+    if (!_running) return 'Tap Start to begin mapping';
+    switch (_trackingState) {
+      case 'normal':
+        return 'Scanning... Move slowly for best results';
+      case 'initializing':
+        return 'Initializing... Keep the phone steady';
+      case 'tooFast':
+        return 'Moving too fast! Please slow down';
+      case 'lowFeatures':
+        return 'Looking for details... Avoid plain walls';
+      case 'relocalizing':
+        return 'Relocalizing... Return to a known area';
+      default:
+        return 'Scan in progress';
+    }
+  }
 
   void _startListening() {
     _sub = _frames.receiveBroadcastStream().listen((event) {
@@ -61,6 +81,29 @@ class _SlamHomePageState extends State<SlamHomePage> {
       await _control.invokeMethod('stop');
       await _sub?.cancel();
     } else {
+      // Show pre-scan tips
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: const Text('Scanning Tips'),
+          content: const Text(
+            '• Move the phone slowly in a circular motion.\n'
+            '• Ensure good lighting.\n'
+            '• Aim at textured objects (not plain walls).\n'
+            '• LiDAR will be used automatically if available.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('Start'),
+            ),
+          ],
+        ),
+      );
+
+      if (proceed != true) return;
+
+      _showMap = false;
       _startListening();
       await _control.invokeMethod('start');
     }
@@ -89,18 +132,16 @@ class _SlamHomePageState extends State<SlamHomePage> {
 
   @override
   Widget build(BuildContext context) {
+    final canViewMap = !_running && _pointCount > 0;
+
     return Scaffold(
       body: Stack(
         children: [
-          // Live camera feed + ARKit's yellow feature-point overlay,
-          // filling the whole screen behind the UI.
+          // Background: either the live AR camera feed, or (after stopping)
+          // the static orbit-able point-cloud map.
           Positioned.fill(
-            child: Platform.isIOS
-                ? const UiKitView(
-                    viewType: _arViewType,
-                    creationParamsCodec: StandardMessageCodec(),
-                  )
-                : const ColoredBox(
+            child: !Platform.isIOS
+                ? const ColoredBox(
                     color: Colors.black,
                     child: Center(
                       child: Text(
@@ -108,35 +149,106 @@ class _SlamHomePageState extends State<SlamHomePage> {
                         style: TextStyle(color: Colors.white),
                       ),
                     ),
+                  )
+                : UiKitView(
+                    // Changing the key forces Flutter to recreate the native
+                    // view when switching modes, so the map viewer picks up
+                    // the freshly finished scan's points on creation.
+                    key: ValueKey(_showMap ? 'map-$_pointCount' : 'live'),
+                    viewType: _showMap ? _mapViewType : _arViewType,
+                    creationParamsCodec: const StandardMessageCodec(),
                   ),
           ),
 
-          // Top overlay: live stats.
-          Positioned(
-            top: MediaQuery.of(context).padding.top + 12,
-            left: 16,
-            right: 16,
-            child: Card(
-              color: Colors.black.withOpacity(0.6),
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Tracking: $_trackingState',
-                        style: const TextStyle(color: Colors.white)),
-                    Text('Map points: $_pointCount',
-                        style: const TextStyle(color: Colors.white)),
-                    Text(
-                      'Pose (x, y, z): ${_x.toStringAsFixed(2)}, '
-                      '${_y.toStringAsFixed(2)}, ${_z.toStringAsFixed(2)}',
-                      style: const TextStyle(color: Colors.white),
+          // Top overlay: live stats (hidden while viewing the finished map).
+          if (!_showMap)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 12,
+              left: 16,
+              right: 16,
+              child: Column(
+                children: [
+                  Card(
+                    color: Colors.black.withOpacity(0.6),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text('Tracking: $_trackingState',
+                                  style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold)),
+                              Icon(
+                                _trackingState == 'normal'
+                                    ? Icons.check_circle
+                                    : Icons.warning,
+                                color: _trackingState == 'normal'
+                                    ? Colors.green
+                                    : Colors.orange,
+                                size: 16,
+                              ),
+                            ],
+                          ),
+                          const Divider(color: Colors.white24),
+                          Text('Points captured: $_pointCount',
+                              style: const TextStyle(color: Colors.white)),
+                          Text(
+                            'Position: ${_x.toStringAsFixed(2)}, '
+                            '${_y.toStringAsFixed(2)}, ${_z.toStringAsFixed(2)}',
+                            style: const TextStyle(
+                                color: Colors.white70, fontSize: 12),
+                          ),
+                        ],
+                      ),
                     ),
-                  ],
+                  ),
+                  if (_running)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8.0),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.teal.withOpacity(0.8),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                          _guidanceMessage,
+                          style: const TextStyle(
+                              color: Colors.white, fontWeight: FontWeight.w500),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+
+          if (_showMap)
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 12,
+              left: 16,
+              right: 16,
+              child: Card(
+                color: Colors.black.withOpacity(0.6),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Map view — $_pointCount points',
+                          style: const TextStyle(color: Colors.white)),
+                      const Text('Drag to rotate • Pinch to zoom',
+                          style:
+                              TextStyle(color: Colors.white70, fontSize: 12)),
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
 
           // Bottom overlay: controls.
           Positioned(
@@ -145,22 +257,43 @@ class _SlamHomePageState extends State<SlamHomePage> {
             right: 16,
             child: Column(
               children: [
-                ElevatedButton.icon(
-                  icon: Icon(_running ? Icons.stop : Icons.play_arrow),
-                  label: Text(_running ? 'Stop Scan' : 'Start Scan'),
-                  onPressed: _toggleScan,
-                ),
-                const SizedBox(height: 8),
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.upload_file),
-                  label: const Text('Export & Share Map (.ply)'),
-                  onPressed: _pointCount > 0 ? _export : null,
-                ),
-                if (_lastExportPath != null) ...[
-                  const SizedBox(height: 6),
-                  Text('Saved to: $_lastExportPath',
-                      style:
-                          const TextStyle(color: Colors.white, fontSize: 11)),
+                if (!_showMap) ...[
+                  ElevatedButton.icon(
+                    icon: Icon(_running ? Icons.stop : Icons.play_arrow),
+                    label: Text(_running ? 'Stop Scan' : 'Start Scan'),
+                    onPressed: _toggleScan,
+                  ),
+                  const SizedBox(height: 8),
+                  if (canViewMap)
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.threed_rotation),
+                      label: const Text('View Map'),
+                      onPressed: () => setState(() => _showMap = true),
+                    ),
+                  const SizedBox(height: 8),
+                  ElevatedButton.icon(
+                    icon: const Icon(Icons.upload_file),
+                    label: const Text('Export & Share Map (.ply)'),
+                    onPressed: _pointCount > 0 ? _export : null,
+                  ),
+                  if (_lastExportPath != null) ...[
+                    const SizedBox(height: 6),
+                    Text('Saved to: $_lastExportPath',
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 11)),
+                  ],
+                ] else ...[
+                  ElevatedButton.icon(
+                    icon: const Icon(Icons.camera_alt),
+                    label: const Text('Back to Camera'),
+                    onPressed: () => setState(() => _showMap = false),
+                  ),
+                  const SizedBox(height: 8),
+                  ElevatedButton.icon(
+                    icon: const Icon(Icons.upload_file),
+                    label: const Text('Export & Share Map (.ply)'),
+                    onPressed: _export,
+                  ),
                 ],
               ],
             ),
